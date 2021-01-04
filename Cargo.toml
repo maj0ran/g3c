@@ -1,0 +1,12 @@
+[package]
+name = "g3c"
+version = "0.1.0"
+authors = ["Marian Cichy <m.cichy@gmail.com>"]
+edition = "2018"
+
+[dependencies]
+url = "*"
+rustls = { version="0.18", features=["dangerous_configuration"] }
+webpki = "0.21"
+log = "0.4"
+env_logger = "0.8"
