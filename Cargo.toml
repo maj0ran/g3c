@@ -10,3 +10,5 @@ rustls = { version="0.18", features=["dangerous_configuration"] }
 webpki = "0.21"
 log = "0.4"
 env_logger = "0.8"
+crossterm = { version = "0.19" }
+tui = { version = "0.16", default-features = false, features = ['crossterm'] }
