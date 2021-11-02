@@ -1,15 +1,29 @@
 use crate::tls;
 use log::info;
 use rustls::Session;
+use std::error::Error;
+use std::fmt;
 use std::io;
 use std::io::{Read, Write};
-use std::net::TcpStream;
+use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
 use std::sync::Arc;
+use std::time::Duration;
+
+#[derive(Debug, Clone)]
+struct ClientError {}
+
+impl fmt::Display for ClientError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Client Error")
+    }
+}
 
 struct GeminiRequest {
     scheme: String,
-    address: String,
+    hostname: String,
     port: String,
+    path: String,
+    address: SocketAddr,
 }
 
 impl GeminiRequest {
@@ -21,85 +35,142 @@ impl GeminiRequest {
     }
 
     fn for_tcp(&self) -> String {
-        format!("{address}:{port}", address = self.address, port = self.port)
+        format!(
+            "{address}:{port}",
+            address = self.hostname,
+            port = self.port
+        )
     }
 
     fn for_dns(&self) -> &String {
-        &self.address
+        &self.hostname
     }
+
     fn request(&self) -> String {
         format!(
-            "{scheme}://{address}:{port}\r\n",
+            "{scheme}://{hostname}{path}\r\n",
             scheme = self.scheme,
-            address = self.address,
-            port = self.port
+            hostname = self.hostname,
+            path = self.path,
         )
     }
 }
 
-pub struct GeminiClient {
-    current_site: String,
-}
+pub struct GeminiClient {}
 
 impl GeminiClient {
     pub fn new() -> Self {
-        GeminiClient {
-            current_site: String::new(),
-        }
+        GeminiClient {}
     }
 
-    fn parse_request(&self, request: String) -> GeminiRequest {
-        let request = request.trim().to_string();
-
-        let scheme = "gemini".to_string();
-        let port = "1965".to_string();
-        let address = if request.starts_with("gemini://") {
-            request["gemini://".len()..].to_string()
-        } else {
-            request
+    fn resolve_hostname(&self, hostname: String) -> Result<SocketAddr, ClientError> {
+        let address = hostname.to_socket_addrs();
+        let mut address = match address {
+            Ok(addr) => addr,
+            Err(_) => return Err(ClientError {}),
         };
 
-        info!("scheme: {}", scheme);
-        info!("address: {}", address);
-        info!("port: {}", port);
+        Ok(address.next().unwrap())
+    }
 
-        GeminiRequest {
+    fn parse_request(&self, request: String) -> Result<GeminiRequest, ClientError> {
+        let mut request = request.trim().to_string();
+
+        let scheme_index = request.find("://");
+        let scheme = match scheme_index {
+            Some(i) => {
+                let scheme = request.drain(..i).collect();
+                request = request.replacen("://", "", 1);
+                scheme
+            }
+            None => String::from("gemini"),
+        };
+
+        let port_index = request.find(":");
+
+        let (hostname, port) = match port_index {
+            Some(i) => {
+                let hostname = request.drain(..i).collect();
+                request = request.replacen(":", "", 1);
+                let port = request.find("/");
+                let port = match port {
+                    Some(i) => {
+                        let port = request.drain(..i).collect();
+                        request = request.replacen("/", "", 1);
+                        port
+                    }
+                    None => request.drain(..).collect(),
+                };
+                (hostname, port)
+            }
+            None => {
+                let hostname = match request.find("/") {
+                    Some(i) => {
+                        let hostname = request.drain(..i).collect();
+                        hostname
+                    }
+                    None => request.drain(..).collect(),
+                };
+                let port = match scheme.as_str() {
+                    "gemini" => String::from("1965"),
+                    _ => String::from("0"),
+                };
+                (hostname, port)
+            }
+        };
+
+        let path = request;
+    //    info!("scheme: {}", scheme);
+    //    info!("hostname: {}", hostname);
+    //    info!("port: {}", port);
+    //    info!("path: {}", path);
+
+        let resolve = format!("{}:{}", hostname, port);
+        let address = self.resolve_hostname(resolve).unwrap();
+
+        Ok(GeminiRequest {
             scheme,
-            address,
+            hostname,
             port,
-        }
+            path,
+            address,
+        })
     }
 
     pub fn goto_url(&self, url: String) -> String {
         let mut read_data: Vec<u8> = vec![];
-        let mut socket;
+        //        let mut socket;
         let mut stream;
         let mut tls_client;
 
         let request = self.parse_request(url);
 
+        let request = match request {
+            Ok(r) => r,
+            Err(e) => return e.to_string(),
+        };
         /* TLS setup */
         let config = tls::setup_config();
 
-        let dns_name = webpki::DNSNameRef::try_from_ascii_str(&request.address);
+        let dns_name = webpki::DNSNameRef::try_from_ascii_str(&request.hostname);
 
         let dns_name = match dns_name {
             Ok(name) => name,
             Err(e) => return e.to_string(),
         };
         tls_client = rustls::ClientSession::new(&Arc::new(config), dns_name);
-
-        socket = TcpStream::connect(request.for_tcp());
-        let mut socket = match socket {
-            Ok(s) => s,
-            Err(e) => return e.to_string(),
+        let addr = request.for_tcp().to_socket_addrs().unwrap().next().unwrap();
+        let mut socket = if let Ok(s) = TcpStream::connect_timeout(&addr, Duration::from_secs(5)) {
+            s
+        } else {
+            return "Failed to connect to socket".to_string();
         };
 
         stream = rustls::Stream::new(&mut tls_client, &mut socket);
 
         match stream.write(request.request().as_bytes()) {
             Ok(_) => {}
-            Err(_) => todo!(),
+            Err(e) => todo!(),
         };
 
         while tls_client.wants_read() {

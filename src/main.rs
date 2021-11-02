@@ -13,6 +13,6 @@ fn main() {
 
     let client = GeminiClient::new();
     let mut interface = Interface::new(client);
-
+//    client.goto_url("gemini.conman.org/dsfsd".to_string());
     interface.run();
 }
